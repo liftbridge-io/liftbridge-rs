@@ -25,7 +25,8 @@ mod client {
     }
 
     //TODO: Make a builder for this
-    struct StreamOptions {
+    #[derive(Default)]
+    pub struct StreamOptions {
         pub group: String,
         pub replication_factor: i32,
         pub partitions: i32,
@@ -61,6 +62,7 @@ mod client {
     }
 
     impl Client {
+        //TODO: This is subject to change as it needs to receive StreamOptions
         pub async fn create_stream(&mut self, subject: &str, name: &str) -> Result<()> {
             let req = tonic::Request::new(CreateStreamRequest {
                 subject: subject.to_string(),
