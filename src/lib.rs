@@ -6,13 +6,13 @@ pub mod api {
 
 mod client {
     use crate::api::api_client::ApiClient;
-    use crate::api::ActivityStreamOp::CreateStream;
-    use crate::api::{CreateStreamRequest, CreateStreamResponse};
-    use anyhow::{Context, Result};
+    
+    use crate::api::{CreateStreamRequest};
+    use anyhow::{Result};
     use std::convert::TryFrom;
-    use std::sync::RwLock;
+    
     use std::time::Duration;
-    use tonic::codegen::Arc;
+    
     use tonic::transport::Channel;
 
     const MAX_BROKER_CONNS: i8 = 2;
