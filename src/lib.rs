@@ -6,7 +6,7 @@ pub mod api {
 
 mod client {
     use crate::api::api_client::ApiClient;
-    use crate::api::{CreateStreamRequest, DeleteStreamRequest};
+    use crate::api::{CreateStreamRequest, DeleteStreamRequest, PauseStreamRequest};
     use crate::error::LiftbridgeError;
     use anyhow::Result;
     use std::convert::TryFrom;
@@ -37,6 +37,12 @@ mod client {
         pub segment_max_age: Option<Duration>,
         pub compact_max_goroutines: Option<i32>,
         pub compact_enabled: Option<bool>,
+    }
+
+    #[derive(Default)]
+    pub struct PauseOptions {
+        pub partitions: Vec<i32>,
+        pub resume_all: bool,
     }
 
     pub struct Client {
@@ -82,6 +88,24 @@ mod client {
                     tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
                     _ => LiftbridgeError::from(err),
                 })?;
+            Ok(())
+        }
+
+        pub async fn pause_stream(&mut self, name: &str, options: PauseOptions) -> Result<()> {
+            let req = tonic::Request::new(PauseStreamRequest {
+                name: name.to_string(),
+                partitions: options.partitions,
+                resume_all: options.resume_all,
+            });
+
+            self.client
+                .pause_stream(req)
+                .await
+                .map_err(|err| match err.code() {
+                    tonic::Code::NotFound => LiftbridgeError::NoSuchPartition { source: err },
+                    _ => LiftbridgeError::from(err),
+                })?;
+
             Ok(())
         }
     }
