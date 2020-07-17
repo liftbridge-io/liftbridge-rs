@@ -24,6 +24,7 @@ mod client {
         timeout: Option<Duration>,
     }
 
+    //TODO: Make a builder for this
     struct StreamOptions {
         pub group: String,
         pub replication_factor: i32,
