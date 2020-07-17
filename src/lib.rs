@@ -6,13 +6,13 @@ pub mod api {
 
 mod client {
     use crate::api::api_client::ApiClient;
-    
-    use crate::api::{CreateStreamRequest};
-    use anyhow::{Result};
+    use crate::api::{CreateStreamRequest, DeleteStreamRequest};
+    use crate::error::LiftbridgeError;
+    use anyhow::Result;
     use std::convert::TryFrom;
-    
+
     use std::time::Duration;
-    
+
     use tonic::transport::Channel;
 
     const MAX_BROKER_CONNS: i8 = 2;
@@ -61,7 +61,27 @@ mod client {
                 name: name.to_string(),
                 ..Default::default()
             });
-            self.client.create_stream(req).await?;
+            self.client
+                .create_stream(req)
+                .await
+                .map_err(|err| match err.code() {
+                    tonic::Code::AlreadyExists => LiftbridgeError::StreamExists { source: err },
+                    _ => LiftbridgeError::from(err),
+                })?;
+            Ok(())
+        }
+
+        pub async fn delete_stream(&mut self, name: &str) -> Result<()> {
+            let req = tonic::Request::new(DeleteStreamRequest {
+                name: name.to_string(),
+            });
+            self.client
+                .delete_stream(req)
+                .await
+                .map_err(|err| match err.code() {
+                    tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
+                    _ => LiftbridgeError::from(err),
+                })?;
             Ok(())
         }
     }

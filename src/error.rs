@@ -1,9 +1,13 @@
+use crate::error::LiftbridgeError::{NoSuchStream, StreamExists};
 use thiserror::Error;
+use tonic::Status;
 
 #[derive(Error, Debug)]
 pub enum LiftbridgeError {
     #[error(transparent)]
     TransportError(#[from] tonic::transport::Error),
+    #[error(transparent)]
+    GrpcError(#[from] tonic::Status),
     #[error("Stream already exists")]
     StreamExists { source: tonic::Status },
     #[error("Stream does not exist")]
