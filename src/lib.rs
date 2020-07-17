@@ -1,10 +1,10 @@
 pub mod error;
 
-pub mod api {
+mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 
-mod client {
+pub mod client {
     use crate::api::api_client::ApiClient;
     use crate::api::{CreateStreamRequest, DeleteStreamRequest, PauseStreamRequest};
     use crate::error::LiftbridgeError;
@@ -13,7 +13,7 @@ mod client {
 
     use std::time::Duration;
 
-    use tonic::transport::Channel;
+    use tonic::transport::{Channel, Endpoint};
 
     const MAX_BROKER_CONNS: i8 = 2;
     const KEEP_ALIVE_DURATION: Duration = Duration::from_secs(30);
@@ -51,18 +51,23 @@ mod client {
         client: ApiClient<Channel>,
     }
 
-    pub async fn new(uri: String) -> Result<Client> {
-        // let timeout: Option<Duration> = timeout.into();
-        let conn = tonic::transport::Endpoint::try_from(uri)?;
-        let conn = conn.tcp_keepalive(Some(KEEP_ALIVE_DURATION));
-
-        let conn = conn.connect().await?;
-        Ok(Client {
-            client: ApiClient::new(conn),
-        })
-    }
-
     impl Client {
+        pub async fn new(addrs: Vec<&str>) -> Result<Client> {
+            let endpoints: Result<Vec<Endpoint>> = addrs
+                .iter()
+                .map(|addr| {
+                    Endpoint::try_from(format!("grpc://{}", addr))
+                        .map(|e| e.tcp_keepalive(Some(KEEP_ALIVE_DURATION)))
+                        .map_err(|err| anyhow::Error::from(err))
+                })
+                .collect();
+            let endpoints = endpoints?.into_iter();
+            let channel = Channel::balance_list(endpoints);
+            let client = ApiClient::new(channel);
+
+            Ok(Client { client })
+        }
+
         //TODO: This is subject to change as it needs to receive StreamOptions
         pub async fn create_stream(&mut self, subject: &str, name: &str) -> Result<()> {
             let req = tonic::Request::new(CreateStreamRequest {
