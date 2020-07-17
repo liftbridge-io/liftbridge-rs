@@ -25,6 +25,7 @@ mod client {
     }
 
     //TODO: Make a builder for this
+    // consider using https://github.com/colin-kiegel/rust-derive-builder
     #[derive(Default)]
     pub struct StreamOptions {
         pub group: String,
