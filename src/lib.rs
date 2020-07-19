@@ -14,10 +14,10 @@ pub mod client {
     use anyhow::Result;
     use std::convert::TryFrom;
 
-    use std::time::{Duration, Instant};
+    use std::time::{Duration};
 
     use chrono::Utc;
-    use std::ops::Sub;
+    
     use tonic::transport::{Channel, Endpoint};
     use tonic::Streaming;
 

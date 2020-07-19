@@ -1,6 +1,6 @@
-use crate::error::LiftbridgeError::{NoSuchStream, StreamExists};
+
 use thiserror::Error;
-use tonic::Status;
+
 
 #[derive(Error, Debug)]
 pub enum LiftbridgeError {
