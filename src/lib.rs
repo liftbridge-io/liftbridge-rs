@@ -6,16 +6,24 @@ mod api {
 
 pub mod client {
     use crate::api::api_client::ApiClient;
-    use crate::api::{CreateStreamRequest, DeleteStreamRequest, PauseStreamRequest};
+    use crate::api::{
+        CreateStreamRequest, DeleteStreamRequest, Message, PauseStreamRequest, StartPosition,
+        SubscribeRequest,
+    };
     use crate::error::LiftbridgeError;
     use anyhow::Result;
     use std::convert::TryFrom;
 
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
+    use chrono::Utc;
+    use std::ops::Sub;
     use tonic::transport::{Channel, Endpoint};
+    use tonic::Streaming;
 
-    const MAX_BROKER_CONNS: i8 = 2;
+    // as we are using http2 here instead of dealing in connection number
+    // this is a default concurrency limit per broker connection
+    const MAX_BROKER_CONCURRENCY: usize = 2;
     const KEEP_ALIVE_DURATION: Duration = Duration::from_secs(30);
     const RESUBSCRIBE_WAIT_TIME: Duration = Duration::from_secs(30);
     const ACK_WAIT_TIME: Duration = Duration::from_secs(5);
@@ -51,13 +59,77 @@ pub mod client {
         client: ApiClient<Channel>,
     }
 
+    pub struct SubscriptionOptions {
+        start_position: StartPosition,
+        start_offset: i64,
+        start_timestamp: i64,
+        partition: i32,
+        read_isr_replica: bool,
+    }
+
+    pub struct Subscription {
+        stream: Streaming<Message>,
+    }
+
+    impl Subscription {
+        pub async fn next(&mut self) -> Result<Option<Message>> {
+            Ok(self.stream.message().await?)
+        }
+    }
+
+    impl Default for SubscriptionOptions {
+        fn default() -> Self {
+            SubscriptionOptions {
+                start_position: StartPosition::NewOnly,
+                ..Default::default()
+            }
+        }
+    }
+
+    impl SubscriptionOptions {
+        pub fn new() -> Self {
+            SubscriptionOptions::default()
+        }
+
+        pub fn start_at_offset(mut self, offset: i64) -> Self {
+            self.start_position = StartPosition::Offset;
+            self.start_offset = offset;
+            self
+        }
+
+        pub fn start_at_time(mut self, time: chrono::DateTime<Utc>) -> Self {
+            self.start_position = StartPosition::Timestamp;
+            self.start_timestamp = time.timestamp();
+            self
+        }
+
+        pub fn start_at_time_delta(mut self, ago: Duration) -> Self {
+            self.start_position = StartPosition::Timestamp;
+            self.start_timestamp = Utc::now().timestamp() - ago.as_secs() as i64;
+            self
+        }
+
+        pub fn start_at_earliest(mut self) -> Self {
+            self.start_position = StartPosition::Earliest;
+            self
+        }
+
+        pub fn partition(mut self, partition: u32) -> Self {
+            self.partition = partition as i32;
+            self
+        }
+    }
+
     impl Client {
         pub async fn new(addrs: Vec<&str>) -> Result<Client> {
             let endpoints: Result<Vec<Endpoint>> = addrs
                 .iter()
                 .map(|addr| {
                     Endpoint::try_from(format!("grpc://{}", addr))
-                        .map(|e| e.tcp_keepalive(Some(KEEP_ALIVE_DURATION)))
+                        .map(|e| {
+                            e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
+                                .concurrency_limit(MAX_BROKER_CONCURRENCY)
+                        })
                         .map_err(|err| anyhow::Error::from(err))
                 })
                 .collect();
@@ -115,6 +187,23 @@ pub mod client {
                 })?;
 
             Ok(())
+        }
+
+        pub async fn subscribe(
+            &mut self,
+            stream_name: &str,
+            options: SubscriptionOptions,
+        ) -> Result<Subscription> {
+            let req = tonic::Request::new(SubscribeRequest {
+                partition: options.partition,
+                start_timestamp: options.start_timestamp,
+                start_offset: options.start_offset,
+                start_position: options.start_position.into(),
+                stream: stream_name.to_string(),
+                read_isr_replica: options.read_isr_replica,
+            });
+            let sub = self.client.subscribe(req).await?.into_inner();
+            Ok(Subscription { stream: sub })
         }
     }
 }
