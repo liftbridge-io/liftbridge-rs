@@ -1,6 +1,4 @@
-
 use thiserror::Error;
-
 
 #[derive(Error, Debug)]
 pub enum LiftbridgeError {
@@ -20,4 +18,6 @@ pub enum LiftbridgeError {
     PartitionPaused,
     #[error("Publish ack timeout")]
     AckTimeout,
+    #[error("Can't connect to any of the specified brokers")]
+    BrokersUnavailable,
 }

@@ -3,21 +3,62 @@ pub mod error;
 mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
+pub mod metadata {
+    use crate::api::{Broker, FetchMetadataRequest, FetchMetadataResponse, StreamMetadata};
+    use anyhow::Result;
+    use chrono::{DateTime, Utc};
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+    use tonic::transport::Channel;
+
+    #[derive(Default)]
+    struct Metadata {
+        last_updated: DateTime<Utc>,
+        brokers: HashMap<String, Broker>,
+        addrs: HashMap<String, Option<bool>>,
+        streams: HashMap<String, StreamMetadata>,
+    }
+
+    impl Metadata {
+        pub fn last_updated(&self) -> DateTime<Utc> {
+            self.last_updated
+        }
+    }
+
+    pub struct MetadataCache {
+        metadata: RwLock<Metadata>,
+    }
+
+    impl MetadataCache {
+        pub fn new() -> Self {
+            MetadataCache {
+                metadata: RwLock(Metadata::default()),
+            }
+        }
+
+        pub async fn update(&mut self, client: &mut crate::client::Client) -> Result<()> {
+            let resp = client._fetch_metadata().await?;
+        }
+    }
+}
 
 pub mod client {
     use crate::api::api_client::ApiClient;
     use crate::api::{
-        CreateStreamRequest, DeleteStreamRequest, Message, PauseStreamRequest, StartPosition,
-        SubscribeRequest,
+        AckPolicy, CreateStreamRequest, DeleteStreamRequest, FetchMetadataRequest,
+        FetchMetadataResponse, Message, PauseStreamRequest, StartPosition, SubscribeRequest,
     };
     use crate::error::LiftbridgeError;
     use anyhow::Result;
     use std::convert::TryFrom;
 
-    use std::time::{Duration};
+    use std::time::Duration;
 
     use chrono::Utc;
-    
+
+    use crate::metadata::MetadataCache;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
     use tonic::Streaming;
 
@@ -30,6 +71,14 @@ pub mod client {
 
     pub struct Config {
         timeout: Option<Duration>,
+    }
+
+    enum Request {
+        CreateStream(tonic::Request<CreateStreamRequest>),
+        PauseStream(tonic::Request<PauseStreamRequest>),
+        DeleteStream(tonic::Request<DeleteStreamRequest>),
+        // Subscribe(tonic::Request<SubscribeRequest>),
+        FetchMetadata(tonic::Request<FetchMetadataRequest>),
     }
 
     //TODO: Make a builder for this
@@ -55,8 +104,10 @@ pub mod client {
         pub resume_all: bool,
     }
 
-    pub struct Client {
-        client: ApiClient<Channel>,
+    pub struct Client<'a> {
+        pool: RwLock<HashMap<String, ApiClient<Channel>>>,
+        client: RwLock<ApiClient<Channel>>,
+        metadata: MetadataCache,
     }
 
     pub struct SubscriptionOptions {
@@ -120,24 +171,106 @@ pub mod client {
         }
     }
 
+    trait Partitioner {
+        // fn partition(stream: &str, key: Vec<u8>, value: Vec<u8>, metadata: Option<Metadata>)
+    }
+
+    struct MessageOptions {
+        // Key to set on the Message. If Liftbridge has stream compaction enabled,
+        // the stream will retain only the last value for each key.
+        key: Vec<u8>,
+
+        // AckInbox sets the NATS subject Liftbridge should publish the Message ack
+        // to. If this is not set, the server will generate a random inbox.
+        ack_inbox: String,
+
+        // correlation_id sets the identifier used to correlate an ack with the
+        // published Message. If this is not set, the ack will not have a
+        // correlation id.
+        correlation_id: String,
+
+        // ack_policy controls the behavior of Message acks sent by the server. By
+        // default, Liftbridge will send an ack when the stream leader has written
+        // the Message to its write-ahead log.
+        ack_policy: AckPolicy,
+
+        // Headers are key-value pairs to set on the Message.
+        headers: HashMap<String, Vec<u8>>,
+
+        // Partitioner specifies the strategy for mapping a Message to a stream
+        // partition.
+        partitioner: Partitioner,
+
+        // Partition specifies the stream partition to publish the Message to. If
+        // this is set, any Partitioner will not be used. This is a pointer to
+        // allow distinguishing between unset and 0.
+        partition: Option<i32>,
+    }
+
     impl Client {
         pub async fn new(addrs: Vec<&str>) -> Result<Client> {
-            let endpoints: Result<Vec<Endpoint>> = addrs
-                .iter()
-                .map(|addr| {
-                    Endpoint::try_from(format!("grpc://{}", addr))
-                        .map(|e| {
-                            e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
-                                .concurrency_limit(MAX_BROKER_CONCURRENCY)
-                        })
-                        .map_err(|err| anyhow::Error::from(err))
-                })
-                .collect();
-            let endpoints = endpoints?.into_iter();
-            let channel = Channel::balance_list(endpoints);
-            let client = ApiClient::new(channel);
+            let client = Client {
+                pool: RwLock::new(HashMap::new()),
+                metadata: MetadataCache::new(),
+                client: RwLock(Client::connect(addrs).await?),
+            };
+            Ok(client)
+        }
 
-            Ok(Client { client })
+        async fn connect(addrs: Vec<&str>) -> Result<ApiClient<Channel>> {
+            for addr in addrs.iter() {
+                let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
+                    .map(|e| {
+                        e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
+                            .concurrency_limit(MAX_BROKER_CONCURRENCY)
+                    })
+                    .map_err(|err| anyhow::Error::from(err))?;
+                let channel = endpoint.connect().await;
+                match channel {
+                    Ok(channel) => return Ok(ApiClient::new(channel)),
+                    _ => continue,
+                }
+            }
+            Err(LiftbridgeError::BrokersUnavailable)?
+        }
+
+        async fn request<T: prost::Message>(&mut self, msg: Request) -> Result<dyn prost::Message> {
+            let client = self.client.get_mut().unwrap();
+            match msg {
+                Request::CreateStream(req) => {
+                    client
+                        .create_stream(req)
+                        .await
+                        .map_err(|err| match err.code() {
+                            tonic::Code::AlreadyExists => {
+                                LiftbridgeError::StreamExists { source: err }
+                            }
+                            _ => LiftbridgeError::from(err),
+                        })?
+                }
+                Request::PauseStream(req) => {
+                    client
+                        .pause_stream(req)
+                        .await
+                        .map_err(|err| match err.code() {
+                            tonic::Code::NotFound => {
+                                LiftbridgeError::NoSuchPartition { source: err }
+                            }
+                            _ => LiftbridgeError::from(err),
+                        })?
+                }
+                Request::DeleteStream(req) => {
+                    client
+                        .delete_stream(req)
+                        .await
+                        .map_err(|err| match err.code() {
+                            tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
+                            _ => LiftbridgeError::from(err),
+                        })?
+                }
+                Request::Subscribe(req) => client.subscribe(req),
+                Request::FetchMetadata(req) => client.fetch_metadata(req),
+            }
         }
 
         //TODO: This is subject to change as it needs to receive StreamOptions
@@ -147,13 +280,7 @@ pub mod client {
                 name: name.to_string(),
                 ..Default::default()
             });
-            self.client
-                .create_stream(req)
-                .await
-                .map_err(|err| match err.code() {
-                    tonic::Code::AlreadyExists => LiftbridgeError::StreamExists { source: err },
-                    _ => LiftbridgeError::from(err),
-                })?;
+            self.request(Request::CreateStream(req))?;
             Ok(())
         }
 
@@ -161,13 +288,7 @@ pub mod client {
             let req = tonic::Request::new(DeleteStreamRequest {
                 name: name.to_string(),
             });
-            self.client
-                .delete_stream(req)
-                .await
-                .map_err(|err| match err.code() {
-                    tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
-                    _ => LiftbridgeError::from(err),
-                })?;
+            self.request(Request::DeleteStream(req))?;
             Ok(())
         }
 
@@ -178,32 +299,36 @@ pub mod client {
                 resume_all: options.resume_all,
             });
 
-            self.client
-                .pause_stream(req)
-                .await
-                .map_err(|err| match err.code() {
-                    tonic::Code::NotFound => LiftbridgeError::NoSuchPartition { source: err },
-                    _ => LiftbridgeError::from(err),
-                })?;
-
+            self.request(Request::PauseStream(req))?;
             Ok(())
         }
 
-        pub async fn subscribe(
-            &mut self,
-            stream_name: &str,
-            options: SubscriptionOptions,
-        ) -> Result<Subscription> {
-            let req = tonic::Request::new(SubscribeRequest {
-                partition: options.partition,
-                start_timestamp: options.start_timestamp,
-                start_offset: options.start_offset,
-                start_position: options.start_position.into(),
-                stream: stream_name.to_string(),
-                read_isr_replica: options.read_isr_replica,
+        // pub async fn subscribe(
+        //     &mut self,
+        //     stream: &str,
+        //     options: SubscriptionOptions,
+        // ) -> Result<Subscription> {
+        //     let req = tonic::Request::new(SubscribeRequest {
+        //         partition: options.partition,
+        //         start_timestamp: options.start_timestamp,
+        //         start_offset: options.start_offset,
+        //         start_position: options.start_position.into(),
+        //         stream: stream.to_string(),
+        //         read_isr_replica: options.read_isr_replica,
+        //     });
+        //     let sub = self.client.subscribe(req).await?.into_inner();
+        //     Ok(Subscription { stream: sub })
+        // }
+
+        pub async fn fetch_metadata(&mut self) {}
+
+        pub(crate) async fn _fetch_metadata(&mut self) -> Result<FetchMetadataResponse> {
+            let req = tonic::Request::new(FetchMetadataRequest {
+                streams: Vec::new(),
             });
-            let sub = self.client.subscribe(req).await?.into_inner();
-            Ok(Subscription { stream: sub })
+            self.request(Request::FetchMetadata(req)).await as Result<FetchMetadataResponse>
         }
+
+        // pub async fn publish(&mut self, stream: &str, message: Vec<u8>, M)
     }
 }
