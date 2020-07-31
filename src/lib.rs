@@ -15,7 +15,6 @@ pub mod metadata {
     struct Metadata {
         last_updated: DateTime<Utc>,
         brokers: HashMap<String, Broker>,
-        addrs: HashMap<String, Option<bool>>,
         streams: HashMap<String, StreamMetadata>,
     }
 
@@ -27,17 +26,35 @@ pub mod metadata {
 
     pub struct MetadataCache {
         metadata: RwLock<Metadata>,
+        bootstrap_addrs: List<String>,
     }
 
     impl MetadataCache {
-        pub fn new() -> Self {
+        pub fn new(addrs: List<String>) -> Self {
             MetadataCache {
                 metadata: RwLock(Metadata::default()),
+                bootstrap_addrs: addrs,
             }
         }
 
         pub async fn update(&mut self, client: &mut crate::client::Client) -> Result<()> {
             let resp = client._fetch_metadata().await?;
+            let mut brokers: HashMap<String, Broker> = HashMap::new();
+            let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
+
+            for b in resp.brokers {
+                brokers.insert(format!("gprc://{}:{}", b.host, b.port), b);
+            }
+
+            for s in resp.metadata {
+                streams.insert(s.name.clone(), s);
+            }
+
+            let mut metadata = self.metadata.write()?;
+            metadata.streams = streams;
+            metadata.brokers = brokers;
+            metadata.last_updated = Utc::now();
+            Ok(())
         }
     }
 }
