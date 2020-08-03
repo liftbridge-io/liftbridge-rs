@@ -11,11 +11,19 @@ pub mod metadata {
     use std::sync::RwLock;
     use tonic::transport::Channel;
 
-    #[derive(Default)]
     struct Metadata {
         last_updated: DateTime<Utc>,
         brokers: HashMap<String, Broker>,
         streams: HashMap<String, StreamMetadata>,
+    }
+
+    impl Default for Metadata {
+        fn default() -> Self {
+            Metadata {
+                last_updated: Utc::now(),
+                ..Default::default()
+            }
+        }
     }
 
     impl Metadata {
@@ -24,33 +32,34 @@ pub mod metadata {
         }
     }
 
-    pub struct MetadataCache {
+    pub struct MetadataCache<'a> {
         metadata: RwLock<Metadata>,
-        bootstrap_addrs: List<String>,
+        bootstrap_addrs: Vec<&'a str>,
     }
 
-    impl MetadataCache {
-        pub fn new(addrs: List<String>) -> Self {
+    impl<'a> MetadataCache<'a> {
+        pub fn new(addrs: Vec<&'a str>) -> Self {
             MetadataCache {
-                metadata: RwLock(Metadata::default()),
+                metadata: RwLock::new(Metadata::default()),
                 bootstrap_addrs: addrs,
             }
         }
 
-        pub async fn update(&mut self, client: &mut crate::client::Client) -> Result<()> {
+        pub async fn update(&'a mut self, client: &mut crate::client::Client<'a>) -> Result<()> {
             let resp = client._fetch_metadata().await?;
             let mut brokers: HashMap<String, Broker> = HashMap::new();
             let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
 
             for b in resp.brokers {
-                brokers.insert(format!("gprc://{}:{}", b.host, b.port), b);
+                let addr = format!("gprc://{}:{}", b.host, b.port);
+                brokers.insert(addr, b);
             }
 
             for s in resp.metadata {
                 streams.insert(s.name.clone(), s);
             }
 
-            let mut metadata = self.metadata.write()?;
+            let mut metadata = self.metadata.write().unwrap();
             metadata.streams = streams;
             metadata.brokers = brokers;
             metadata.last_updated = Utc::now();
@@ -62,8 +71,9 @@ pub mod metadata {
 pub mod client {
     use crate::api::api_client::ApiClient;
     use crate::api::{
-        AckPolicy, CreateStreamRequest, DeleteStreamRequest, FetchMetadataRequest,
-        FetchMetadataResponse, Message, PauseStreamRequest, StartPosition, SubscribeRequest,
+        AckPolicy, CreateStreamRequest, CreateStreamResponse, DeleteStreamRequest,
+        DeleteStreamResponse, FetchMetadataRequest, FetchMetadataResponse, Message,
+        PauseStreamRequest, PauseStreamResponse, StartPosition, SubscribeRequest,
     };
     use crate::error::LiftbridgeError;
     use anyhow::Result;
@@ -74,6 +84,7 @@ pub mod client {
     use chrono::Utc;
 
     use crate::metadata::MetadataCache;
+    use std::any::Any;
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
@@ -96,6 +107,13 @@ pub mod client {
         DeleteStream(tonic::Request<DeleteStreamRequest>),
         // Subscribe(tonic::Request<SubscribeRequest>),
         FetchMetadata(tonic::Request<FetchMetadataRequest>),
+    }
+
+    enum Response {
+        CreateStream(tonic::Response<CreateStreamResponse>),
+        PauseStream(tonic::Response<PauseStreamResponse>),
+        DeleteStream(tonic::Response<DeleteStreamResponse>),
+        FetchMetadata(tonic::Response<FetchMetadataResponse>),
     }
 
     //TODO: Make a builder for this
@@ -124,7 +142,7 @@ pub mod client {
     pub struct Client<'a> {
         pool: RwLock<HashMap<String, ApiClient<Channel>>>,
         client: RwLock<ApiClient<Channel>>,
-        metadata: MetadataCache,
+        metadata: MetadataCache<'a>,
     }
 
     pub struct SubscriptionOptions {
@@ -216,7 +234,7 @@ pub mod client {
 
         // Partitioner specifies the strategy for mapping a Message to a stream
         // partition.
-        partitioner: Partitioner,
+        partitioner: Box<dyn Partitioner>,
 
         // Partition specifies the stream partition to publish the Message to. If
         // this is set, any Partitioner will not be used. This is a pointer to
@@ -224,17 +242,17 @@ pub mod client {
         partition: Option<i32>,
     }
 
-    impl Client {
-        pub async fn new(addrs: Vec<&str>) -> Result<Client> {
+    impl<'a> Client<'a> {
+        pub async fn new(addrs: Vec<&'a str>) -> Result<Client<'a>> {
             let client = Client {
                 pool: RwLock::new(HashMap::new()),
-                metadata: MetadataCache::new(),
-                client: RwLock(Client::connect(addrs).await?),
+                client: RwLock::new(Client::connect(&addrs).await?),
+                metadata: MetadataCache::new(addrs),
             };
             Ok(client)
         }
 
-        async fn connect(addrs: Vec<&str>) -> Result<ApiClient<Channel>> {
+        async fn connect(addrs: &Vec<&str>) -> Result<ApiClient<Channel>> {
             for addr in addrs.iter() {
                 let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
                     .map(|e| {
@@ -251,43 +269,41 @@ pub mod client {
             Err(LiftbridgeError::BrokersUnavailable)?
         }
 
-        async fn request<T: prost::Message>(&mut self, msg: Request) -> Result<dyn prost::Message> {
+        async fn request(&mut self, msg: Request) -> Result<Response> {
             let client = self.client.get_mut().unwrap();
-            match msg {
-                Request::CreateStream(req) => {
-                    client
-                        .create_stream(req)
-                        .await
-                        .map_err(|err| match err.code() {
-                            tonic::Code::AlreadyExists => {
-                                LiftbridgeError::StreamExists { source: err }
-                            }
-                            _ => LiftbridgeError::from(err),
-                        })?
-                }
-                Request::PauseStream(req) => {
-                    client
-                        .pause_stream(req)
-                        .await
-                        .map_err(|err| match err.code() {
-                            tonic::Code::NotFound => {
-                                LiftbridgeError::NoSuchPartition { source: err }
-                            }
-                            _ => LiftbridgeError::from(err),
-                        })?
-                }
-                Request::DeleteStream(req) => {
-                    client
-                        .delete_stream(req)
-                        .await
-                        .map_err(|err| match err.code() {
-                            tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
-                            _ => LiftbridgeError::from(err),
-                        })?
-                }
-                Request::Subscribe(req) => client.subscribe(req),
-                Request::FetchMetadata(req) => client.fetch_metadata(req),
-            }
+            let res = match msg {
+                Request::CreateStream(req) => client
+                    .create_stream(req)
+                    .await
+                    .map_err(|err| match err.code() {
+                        tonic::Code::AlreadyExists => LiftbridgeError::StreamExists { source: err },
+                        _ => LiftbridgeError::from(err),
+                    })
+                    .map(Response::CreateStream)?,
+                Request::PauseStream(req) => client
+                    .pause_stream(req)
+                    .await
+                    .map_err(|err| match err.code() {
+                        tonic::Code::NotFound => LiftbridgeError::NoSuchPartition { source: err },
+                        _ => LiftbridgeError::from(err),
+                    })
+                    .map(Response::PauseStream)?,
+                Request::DeleteStream(req) => client
+                    .delete_stream(req)
+                    .await
+                    .map_err(|err| match err.code() {
+                        tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
+                        _ => LiftbridgeError::from(err),
+                    })
+                    .map(Response::DeleteStream)?,
+                // Request::Subscribe(req) => client.subscribe(req),
+                Request::FetchMetadata(req) => client
+                    .fetch_metadata(req)
+                    .await
+                    .map_err(LiftbridgeError::from)
+                    .map(Response::FetchMetadata)?,
+            };
+            Ok(res)
         }
 
         //TODO: This is subject to change as it needs to receive StreamOptions
@@ -297,7 +313,7 @@ pub mod client {
                 name: name.to_string(),
                 ..Default::default()
             });
-            self.request(Request::CreateStream(req))?;
+            self.request(Request::CreateStream(req)).await?;
             Ok(())
         }
 
@@ -305,7 +321,7 @@ pub mod client {
             let req = tonic::Request::new(DeleteStreamRequest {
                 name: name.to_string(),
             });
-            self.request(Request::DeleteStream(req))?;
+            self.request(Request::DeleteStream(req)).await?;
             Ok(())
         }
 
@@ -316,7 +332,7 @@ pub mod client {
                 resume_all: options.resume_all,
             });
 
-            self.request(Request::PauseStream(req))?;
+            self.request(Request::PauseStream(req)).await?;
             Ok(())
         }
 
@@ -343,7 +359,12 @@ pub mod client {
             let req = tonic::Request::new(FetchMetadataRequest {
                 streams: Vec::new(),
             });
-            self.request(Request::FetchMetadata(req)).await as Result<FetchMetadataResponse>
+            self.request(Request::FetchMetadata(req))
+                .await
+                .map(|resp| match resp {
+                    Response::FetchMetadata(r) => r.into_inner(),
+                    _ => panic!("wrong response type"),
+                })
         }
 
         // pub async fn publish(&mut self, stream: &str, message: Vec<u8>, M)
