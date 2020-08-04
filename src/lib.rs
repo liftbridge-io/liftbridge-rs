@@ -10,7 +10,6 @@ pub mod metadata {
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
     use std::sync::{RwLock, RwLockReadGuard};
-    
 
     struct Metadata {
         last_updated: DateTime<Utc>,
@@ -75,7 +74,7 @@ pub mod metadata {
             Ok(())
         }
 
-        fn get_addrs(&self) -> Vec<&'a str> {
+        pub fn get_addrs(&self) -> Vec<&'a str> {
             let mut addrs = self.bootstrap_addrs.clone();
             addrs.extend(&self.get_addrs());
             addrs
@@ -123,11 +122,11 @@ pub mod client {
     use chrono::Utc;
 
     use crate::metadata::MetadataCache;
-    
+
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
-    use tonic::Streaming;
+    use tonic::{IntoRequest, Streaming};
 
     // as we are using http2 here instead of dealing in connection number
     // this is a default concurrency limit per broker connection
@@ -140,12 +139,13 @@ pub mod client {
         timeout: Option<Duration>,
     }
 
+    #[derive(Clone)]
     enum Request {
-        CreateStream(tonic::Request<CreateStreamRequest>),
-        PauseStream(tonic::Request<PauseStreamRequest>),
-        DeleteStream(tonic::Request<DeleteStreamRequest>),
+        CreateStream(CreateStreamRequest),
+        PauseStream(PauseStreamRequest),
+        DeleteStream(DeleteStreamRequest),
         // Subscribe(tonic::Request<SubscribeRequest>),
-        FetchMetadata(tonic::Request<FetchMetadataRequest>),
+        FetchMetadata(FetchMetadataRequest),
     }
 
     enum Response {
@@ -204,16 +204,16 @@ pub mod client {
 
     impl Default for SubscriptionOptions {
         fn default() -> Self {
-            SubscriptionOptions {
-                start_position: StartPosition::NewOnly,
-                ..Default::default()
-            }
+            Self::new()
         }
     }
 
     impl SubscriptionOptions {
         pub fn new() -> Self {
-            SubscriptionOptions::default()
+            SubscriptionOptions {
+                start_position: StartPosition::NewOnly,
+                ..Default::default()
+            }
         }
 
         pub fn start_at_offset(mut self, offset: i64) -> Self {
@@ -291,6 +291,12 @@ pub mod client {
             Ok(client)
         }
 
+        async fn change_broker(&mut self) -> Result<()> {
+            let new_client = Client::connect(&self.metadata.get_addrs()).await?;
+            self.client = RwLock::new(new_client);
+            Ok(())
+        }
+
         async fn connect(addrs: &Vec<&str>) -> Result<ApiClient<Channel>> {
             for addr in addrs.iter() {
                 let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
@@ -309,18 +315,36 @@ pub mod client {
         }
 
         async fn request(&mut self, msg: Request) -> Result<Response> {
+            for _ in 0..9 {
+                let res = self._request(&msg).await;
+                match res {
+                    Err(e) => match e.downcast_ref::<LiftbridgeError>() {
+                        Some(LiftbridgeError::GrpcError(status))
+                            if status.code() == tonic::Code::Unavailable =>
+                        {
+                            self.change_broker().await?
+                        }
+                        _ => Err(e)?,
+                    },
+                    _ => return res,
+                }
+            }
+            return Err(LiftbridgeError::BrokersUnavailable.into());
+        }
+
+        async fn _request(&mut self, msg: &Request) -> Result<Response> {
             let client = self.client.get_mut().unwrap();
-            let res = match msg {
+            let res = match msg.clone() {
                 Request::CreateStream(req) => client
-                    .create_stream(req)
+                    .create_stream(tonic::Request::new(req))
                     .await
                     .map_err(|err| match err.code() {
-                        tonic::Code::AlreadyExists => LiftbridgeError::StreamExists { source: err },
+                        tonic::Code::AlreadyExists => LiftbridgeError::StreamExists,
                         _ => LiftbridgeError::from(err),
                     })
                     .map(Response::CreateStream)?,
                 Request::PauseStream(req) => client
-                    .pause_stream(req)
+                    .pause_stream(tonic::Request::new(req))
                     .await
                     .map_err(|err| match err.code() {
                         tonic::Code::NotFound => LiftbridgeError::NoSuchPartition,
@@ -328,7 +352,7 @@ pub mod client {
                     })
                     .map(Response::PauseStream)?,
                 Request::DeleteStream(req) => client
-                    .delete_stream(req)
+                    .delete_stream(tonic::Request::new(req))
                     .await
                     .map_err(|err| match err.code() {
                         tonic::Code::NotFound => LiftbridgeError::NoSuchStream,
@@ -337,7 +361,7 @@ pub mod client {
                     .map(Response::DeleteStream)?,
                 // Request::Subscribe(req) => client.subscribe(req),
                 Request::FetchMetadata(req) => client
-                    .fetch_metadata(req)
+                    .fetch_metadata(tonic::Request::new(req))
                     .await
                     .map_err(LiftbridgeError::from)
                     .map(Response::FetchMetadata)?,
@@ -347,29 +371,29 @@ pub mod client {
 
         //TODO: This is subject to change as it needs to receive StreamOptions
         pub async fn create_stream(&mut self, subject: &str, name: &str) -> Result<()> {
-            let req = tonic::Request::new(CreateStreamRequest {
+            let req = CreateStreamRequest {
                 subject: subject.to_string(),
                 name: name.to_string(),
                 ..Default::default()
-            });
+            };
             self.request(Request::CreateStream(req)).await?;
             Ok(())
         }
 
         pub async fn delete_stream(&mut self, name: &str) -> Result<()> {
-            let req = tonic::Request::new(DeleteStreamRequest {
+            let req = DeleteStreamRequest {
                 name: name.to_string(),
-            });
+            };
             self.request(Request::DeleteStream(req)).await?;
             Ok(())
         }
 
         pub async fn pause_stream(&mut self, name: &str, options: PauseOptions) -> Result<()> {
-            let req = tonic::Request::new(PauseStreamRequest {
+            let req = PauseStreamRequest {
                 name: name.to_string(),
                 partitions: options.partitions,
                 resume_all: options.resume_all,
-            });
+            };
 
             self.request(Request::PauseStream(req)).await?;
             Ok(())
@@ -395,9 +419,9 @@ pub mod client {
         pub async fn fetch_metadata(&mut self) {}
 
         pub(crate) async fn _fetch_metadata(&mut self) -> Result<FetchMetadataResponse> {
-            let req = tonic::Request::new(FetchMetadataRequest {
+            let req = FetchMetadataRequest {
                 streams: Vec::new(),
-            });
+            };
             self.request(Request::FetchMetadata(req))
                 .await
                 .map(|resp| match resp {

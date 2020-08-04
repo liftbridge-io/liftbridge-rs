@@ -7,19 +7,19 @@ pub enum LiftbridgeError {
     #[error(transparent)]
     GrpcError(#[from] tonic::Status),
     #[error("Stream already exists")]
-    StreamExists { source: tonic::Status },
+    StreamExists,
     #[error("Stream does not exist")]
     NoSuchStream,
     #[error("Stream partition does not exist")]
     NoSuchPartition,
     #[error("Stream has been deleted")]
-    StreamDeleted { source: tonic::Status },
+    StreamDeleted,
     #[error("Stream partition has been paused")]
     PartitionPaused,
     #[error("Publish ack timeout")]
     AckTimeout,
     #[error("Can't connect to any of the specified brokers")]
     BrokersUnavailable,
-    #[error("No known leader for partition")]
+    #[error("no known leader for partition")]
     NoLeader,
 }
