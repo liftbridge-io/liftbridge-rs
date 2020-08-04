@@ -334,6 +334,7 @@ pub mod client {
 
         async fn _request(&mut self, msg: &Request) -> Result<Response> {
             let client = self.client.get_mut().unwrap();
+            // TODO: it would be nice to do without the clone
             let res = match msg.clone() {
                 Request::CreateStream(req) => client
                     .create_stream(tonic::Request::new(req))
