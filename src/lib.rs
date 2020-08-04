@@ -4,13 +4,13 @@ mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 pub mod metadata {
-    use crate::api::{Broker, FetchMetadataRequest, FetchMetadataResponse, StreamMetadata};
+    use crate::api::{Broker, StreamMetadata};
     use crate::error::LiftbridgeError;
     use anyhow::Result;
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
     use std::sync::{RwLock, RwLockReadGuard};
-    use tonic::transport::Channel;
+    
 
     struct Metadata {
         last_updated: DateTime<Utc>,
@@ -112,7 +112,7 @@ pub mod client {
     use crate::api::{
         AckPolicy, CreateStreamRequest, CreateStreamResponse, DeleteStreamRequest,
         DeleteStreamResponse, FetchMetadataRequest, FetchMetadataResponse, Message,
-        PauseStreamRequest, PauseStreamResponse, StartPosition, SubscribeRequest,
+        PauseStreamRequest, PauseStreamResponse, StartPosition,
     };
     use crate::error::LiftbridgeError;
     use anyhow::Result;
@@ -123,7 +123,7 @@ pub mod client {
     use chrono::Utc;
 
     use crate::metadata::MetadataCache;
-    use std::any::Any;
+    
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
