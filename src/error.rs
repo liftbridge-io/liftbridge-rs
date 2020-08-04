@@ -9,9 +9,9 @@ pub enum LiftbridgeError {
     #[error("Stream already exists")]
     StreamExists { source: tonic::Status },
     #[error("Stream does not exist")]
-    NoSuchStream { source: tonic::Status },
+    NoSuchStream,
     #[error("Stream partition does not exist")]
-    NoSuchPartition { source: tonic::Status },
+    NoSuchPartition,
     #[error("Stream has been deleted")]
     StreamDeleted { source: tonic::Status },
     #[error("Stream partition has been paused")]
@@ -20,4 +20,6 @@ pub enum LiftbridgeError {
     AckTimeout,
     #[error("Can't connect to any of the specified brokers")]
     BrokersUnavailable,
+    #[error("No known leader for partition")]
+    NoLeader,
 }

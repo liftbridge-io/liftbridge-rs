@@ -5,10 +5,11 @@ mod api {
 }
 pub mod metadata {
     use crate::api::{Broker, FetchMetadataRequest, FetchMetadataResponse, StreamMetadata};
+    use crate::error::LiftbridgeError;
     use anyhow::Result;
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
-    use std::sync::RwLock;
+    use std::sync::{RwLock, RwLockReadGuard};
     use tonic::transport::Channel;
 
     struct Metadata {
@@ -29,6 +30,14 @@ pub mod metadata {
     impl Metadata {
         pub fn last_updated(&self) -> DateTime<Utc> {
             self.last_updated
+        }
+
+        fn get_addrs(&self) -> Vec<&str> {
+            self.brokers
+                .keys()
+                .into_iter()
+                .map(|k| k.as_str())
+                .collect()
         }
     }
 
@@ -64,6 +73,36 @@ pub mod metadata {
             metadata.brokers = brokers;
             metadata.last_updated = Utc::now();
             Ok(())
+        }
+
+        fn get_addrs(&self) -> Vec<&'a str> {
+            let mut addrs = self.bootstrap_addrs.clone();
+            addrs.extend(&self.get_addrs());
+            addrs
+        }
+
+        fn get_addr(&self, stream: &str, partition: i32, read_isr_replica: bool) -> Result<String> {
+            let metadata: RwLockReadGuard<Metadata> = self.metadata.read().unwrap();
+            let stream = metadata
+                .streams
+                .get(stream)
+                .ok_or(LiftbridgeError::NoSuchStream)?;
+            let partition = stream
+                .partitions
+                .get(&partition)
+                .ok_or(LiftbridgeError::NoSuchPartition)?;
+
+            if read_isr_replica {
+                let replicas = &partition.isr;
+                //TODO: add rand
+                return Ok(replicas.get(0).unwrap().clone());
+            }
+
+            if partition.leader.is_empty() {
+                Err(LiftbridgeError::NoLeader)?
+            }
+
+            Ok(partition.leader.clone())
         }
     }
 }
@@ -284,7 +323,7 @@ pub mod client {
                     .pause_stream(req)
                     .await
                     .map_err(|err| match err.code() {
-                        tonic::Code::NotFound => LiftbridgeError::NoSuchPartition { source: err },
+                        tonic::Code::NotFound => LiftbridgeError::NoSuchPartition,
                         _ => LiftbridgeError::from(err),
                     })
                     .map(Response::PauseStream)?,
@@ -292,7 +331,7 @@ pub mod client {
                     .delete_stream(req)
                     .await
                     .map_err(|err| match err.code() {
-                        tonic::Code::NotFound => LiftbridgeError::NoSuchStream { source: err },
+                        tonic::Code::NotFound => LiftbridgeError::NoSuchStream,
                         _ => LiftbridgeError::from(err),
                     })
                     .map(Response::DeleteStream)?,
