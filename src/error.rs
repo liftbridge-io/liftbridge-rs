@@ -20,6 +20,8 @@ pub enum LiftbridgeError {
     AckTimeout,
     #[error("Can't connect to any of the specified brokers")]
     BrokersUnavailable,
-    #[error("no known leader for partition")]
+    #[error("No known leader for partition")]
     NoLeader,
+    #[error("Unable to subcribe")]
+    UnableToSubscribe,
 }

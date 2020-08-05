@@ -12,8 +12,10 @@ prost = "0.6.1"
 thiserror = "1.0.20"
 anyhow = "1.0.31"
 chrono = "0.4.13"
+tokio = { version = "0.2", features = ["time"] }
 # TODO: Remove before merging the WIP branch.
 actix-rt = "1.1.1"
+
 
 [build-dependencies]
 tonic-build = "0.3.0"

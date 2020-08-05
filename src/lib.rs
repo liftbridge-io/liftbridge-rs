@@ -4,7 +4,7 @@ mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 pub mod metadata {
-    use crate::api::{Broker, StreamMetadata};
+    use crate::api::{Broker, FetchMetadataResponse, StreamMetadata};
     use crate::error::LiftbridgeError;
     use anyhow::Result;
     use chrono::{DateTime, Utc};
@@ -53,8 +53,7 @@ pub mod metadata {
             }
         }
 
-        pub async fn update(&'a mut self, client: &mut crate::client::Client<'a>) -> Result<()> {
-            let resp = client._fetch_metadata().await?;
+        pub async fn update(&self, resp: FetchMetadataResponse) {
             let mut brokers: HashMap<String, Broker> = HashMap::new();
             let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
 
@@ -71,7 +70,6 @@ pub mod metadata {
             metadata.streams = streams;
             metadata.brokers = brokers;
             metadata.last_updated = Utc::now();
-            Ok(())
         }
 
         pub fn get_addrs(&self) -> Vec<&'a str> {
@@ -80,7 +78,12 @@ pub mod metadata {
             addrs
         }
 
-        fn get_addr(&self, stream: &str, partition: i32, read_isr_replica: bool) -> Result<String> {
+        pub fn get_addr(
+            &self,
+            stream: &str,
+            partition: i32,
+            read_isr_replica: bool,
+        ) -> Result<String> {
             let metadata: RwLockReadGuard<Metadata> = self.metadata.read().unwrap();
             let stream = metadata
                 .streams
@@ -111,7 +114,7 @@ pub mod client {
     use crate::api::{
         AckPolicy, CreateStreamRequest, CreateStreamResponse, DeleteStreamRequest,
         DeleteStreamResponse, FetchMetadataRequest, FetchMetadataResponse, Message,
-        PauseStreamRequest, PauseStreamResponse, StartPosition,
+        PauseStreamRequest, PauseStreamResponse, StartPosition, SubscribeRequest,
     };
     use crate::error::LiftbridgeError;
     use anyhow::Result;
@@ -123,6 +126,7 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
+    use std::borrow::BorrowMut;
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
@@ -144,7 +148,7 @@ pub mod client {
         CreateStream(CreateStreamRequest),
         PauseStream(PauseStreamRequest),
         DeleteStream(DeleteStreamRequest),
-        // Subscribe(tonic::Request<SubscribeRequest>),
+        Subscribe(SubscribeRequest),
         FetchMetadata(FetchMetadataRequest),
     }
 
@@ -153,6 +157,7 @@ pub mod client {
         PauseStream(tonic::Response<PauseStreamResponse>),
         DeleteStream(tonic::Response<DeleteStreamResponse>),
         FetchMetadata(tonic::Response<FetchMetadataResponse>),
+        Subscribe(tonic::Response<Streaming<Message>>),
     }
 
     //TODO: Make a builder for this
@@ -285,38 +290,43 @@ pub mod client {
         pub async fn new(addrs: Vec<&'a str>) -> Result<Client<'a>> {
             let client = Client {
                 pool: RwLock::new(HashMap::new()),
-                client: RwLock::new(Client::connect(&addrs).await?),
+                client: RwLock::new(Client::connect_any(&addrs).await?),
                 metadata: MetadataCache::new(addrs),
             };
             Ok(client)
         }
 
         async fn change_broker(&mut self) -> Result<()> {
-            let new_client = Client::connect(&self.metadata.get_addrs()).await?;
+            let new_client = Client::connect_any(&self.metadata.get_addrs()).await?;
             self.client = RwLock::new(new_client);
             Ok(())
         }
 
-        async fn connect(addrs: &Vec<&str>) -> Result<ApiClient<Channel>> {
+        async fn connect_any(addrs: &Vec<&str>) -> Result<ApiClient<Channel>> {
             for addr in addrs.iter() {
-                let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
-                    .map(|e| {
-                        e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
-                            .concurrency_limit(MAX_BROKER_CONCURRENCY)
-                    })
-                    .map_err(|err| anyhow::Error::from(err))?;
-                let channel = endpoint.connect().await;
-                match channel {
-                    Ok(channel) => return Ok(ApiClient::new(channel)),
+                let client = Self::connect(addr).await;
+                match client {
+                    Ok(_) => return client,
                     _ => continue,
                 }
             }
             Err(LiftbridgeError::BrokersUnavailable)?
         }
 
+        async fn connect(addr: &str) -> Result<ApiClient<Channel>> {
+            let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
+                .map(|e| {
+                    e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
+                        .concurrency_limit(MAX_BROKER_CONCURRENCY)
+                })
+                .map_err(|err| anyhow::Error::from(err))?;
+            let channel = endpoint.connect().await;
+            Ok(channel.map(|chan| ApiClient::new(chan))?)
+        }
+
         async fn request(&mut self, msg: Request) -> Result<Response> {
             for _ in 0..9 {
-                let res = self._request(&msg).await;
+                let res = Self::_request(self.client.get_mut().unwrap(), &msg).await;
                 match res {
                     Err(e) => match e.downcast_ref::<LiftbridgeError>() {
                         Some(LiftbridgeError::GrpcError(status))
@@ -332,8 +342,8 @@ pub mod client {
             return Err(LiftbridgeError::BrokersUnavailable.into());
         }
 
-        async fn _request(&mut self, msg: &Request) -> Result<Response> {
-            let client = self.client.get_mut().unwrap();
+        //TODO: We need to iterate the addresses if this fails to assign a new default broker
+        async fn _request(client: &mut ApiClient<Channel>, msg: &Request) -> Result<Response> {
             // TODO: it would be nice to do without the clone
             let res = match msg.clone() {
                 Request::CreateStream(req) => client
@@ -360,7 +370,12 @@ pub mod client {
                         _ => LiftbridgeError::from(err),
                     })
                     .map(Response::DeleteStream)?,
-                // Request::Subscribe(req) => client.subscribe(req),
+                //TODO: Sort out map_err types
+                Request::Subscribe(req) => client
+                    .subscribe(tonic::Request::new(req))
+                    .await
+                    .map_err(LiftbridgeError::from)
+                    .map(Response::Subscribe)?,
                 Request::FetchMetadata(req) => client
                     .fetch_metadata(tonic::Request::new(req))
                     .await
@@ -400,22 +415,44 @@ pub mod client {
             Ok(())
         }
 
-        // pub async fn subscribe(
-        //     &mut self,
-        //     stream: &str,
-        //     options: SubscriptionOptions,
-        // ) -> Result<Subscription> {
-        //     let req = tonic::Request::new(SubscribeRequest {
-        //         partition: options.partition,
-        //         start_timestamp: options.start_timestamp,
-        //         start_offset: options.start_offset,
-        //         start_position: options.start_position.into(),
-        //         stream: stream.to_string(),
-        //         read_isr_replica: options.read_isr_replica,
-        //     });
-        //     let sub = self.client.subscribe(req).await?.into_inner();
-        //     Ok(Subscription { stream: sub })
-        // }
+        pub async fn subscribe(
+            &'a mut self,
+            stream: &str,
+            options: SubscriptionOptions,
+        ) -> Result<Subscription> {
+            let req = SubscribeRequest {
+                partition: options.partition,
+                start_timestamp: options.start_timestamp,
+                start_offset: options.start_offset,
+                start_position: options.start_position.into(),
+                stream: stream.to_string(),
+                read_isr_replica: options.read_isr_replica,
+            };
+
+            for _ in 0..4 {
+                let client = self
+                    .get_conn(stream, options.partition, options.read_isr_replica)
+                    .await;
+                match client {
+                    Err(_) => {
+                        tokio::time::delay_for(Duration::from_millis(50));
+                        //TODO: What to do if this fails?
+                        self.update_metadata().await;
+                    }
+                    Ok(client) => {
+                        //TODO: check different error codes and retry as necessary
+                        let sub = Self::_request(client, &Request::Subscribe(req.clone())).await;
+                    }
+                }
+            }
+            Err(LiftbridgeError::UnableToSubscribe)?
+        }
+
+        async fn update_metadata(&mut self) -> Result<()> {
+            let resp = self._fetch_metadata().await?;
+            self.metadata.update(resp);
+            Ok(())
+        }
 
         pub async fn fetch_metadata(&mut self) {}
 
@@ -429,6 +466,25 @@ pub mod client {
                     Response::FetchMetadata(r) => r.into_inner(),
                     _ => panic!("wrong response type"),
                 })
+        }
+
+        async fn get_conn(
+            &mut self,
+            stream: &str,
+            partition: i32,
+            read_isr_replica: bool,
+        ) -> Result<&mut ApiClient<Channel>> {
+            let addr = self
+                .metadata
+                .get_addr(stream, partition, read_isr_replica)?;
+            let pool = self.pool.get_mut().unwrap();
+            if pool.contains_key(&addr) {
+                return Ok(pool.get_mut(&addr).unwrap());
+            }
+
+            let client = Self::connect(&addr).await?;
+            pool.insert(addr.clone(), client);
+            Ok(pool.get_mut(&addr).unwrap())
         }
 
         // pub async fn publish(&mut self, stream: &str, message: Vec<u8>, M)
