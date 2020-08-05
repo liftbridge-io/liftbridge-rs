@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+pub type Result<T, E = LiftbridgeError> = core::result::Result<T, E>;
+
 #[derive(Error, Debug)]
 pub enum LiftbridgeError {
     #[error(transparent)]

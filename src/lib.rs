@@ -1,12 +1,12 @@
 pub mod error;
+pub use error::{LiftbridgeError, Result};
 
 mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 pub mod metadata {
     use crate::api::{Broker, FetchMetadataResponse, StreamMetadata};
-    use crate::error::LiftbridgeError;
-    use anyhow::Result;
+    use crate::{LiftbridgeError, Result};
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
     use std::sync::{RwLock, RwLockReadGuard};
@@ -53,7 +53,7 @@ pub mod metadata {
             }
         }
 
-        pub async fn update(&self, resp: FetchMetadataResponse) {
+        pub fn update(&self, resp: FetchMetadataResponse) {
             let mut brokers: HashMap<String, Broker> = HashMap::new();
             let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
 
@@ -116,8 +116,7 @@ pub mod client {
         DeleteStreamResponse, FetchMetadataRequest, FetchMetadataResponse, Message,
         PauseStreamRequest, PauseStreamResponse, StartPosition, SubscribeRequest,
     };
-    use crate::error::LiftbridgeError;
-    use anyhow::Result;
+    use crate::{LiftbridgeError, Result};
     use std::convert::TryFrom;
 
     use std::time::Duration;
@@ -126,6 +125,7 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
+    use actix_rt::time::delay_for;
     use std::borrow::BorrowMut;
     use std::collections::HashMap;
     use std::sync::RwLock;
@@ -319,7 +319,7 @@ pub mod client {
                     e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
                         .concurrency_limit(MAX_BROKER_CONCURRENCY)
                 })
-                .map_err(|err| anyhow::Error::from(err))?;
+                .unwrap();
             let channel = endpoint.connect().await;
             Ok(channel.map(|chan| ApiClient::new(chan))?)
         }
@@ -328,14 +328,12 @@ pub mod client {
             for _ in 0..9 {
                 let res = Self::_request(self.client.get_mut().unwrap(), &msg).await;
                 match res {
-                    Err(e) => match e.downcast_ref::<LiftbridgeError>() {
-                        Some(LiftbridgeError::GrpcError(status))
-                            if status.code() == tonic::Code::Unavailable =>
-                        {
-                            self.change_broker().await?
-                        }
-                        _ => Err(e)?,
-                    },
+                    Err(LiftbridgeError::GrpcError(status))
+                        if status.code() == tonic::Code::Unavailable =>
+                    {
+                        self.change_broker().await?;
+                        continue;
+                    }
                     _ => return res,
                 }
             }
@@ -374,7 +372,6 @@ pub mod client {
                 Request::Subscribe(req) => client
                     .subscribe(tonic::Request::new(req))
                     .await
-                    .map_err(LiftbridgeError::from)
                     .map(Response::Subscribe)?,
                 Request::FetchMetadata(req) => client
                     .fetch_metadata(tonic::Request::new(req))
@@ -429,19 +426,61 @@ pub mod client {
                 read_isr_replica: options.read_isr_replica,
             };
 
-            for _ in 0..4 {
+            for i in 0..4 {
                 let client = self
                     .get_conn(stream, options.partition, options.read_isr_replica)
                     .await;
                 match client {
                     Err(_) => {
-                        tokio::time::delay_for(Duration::from_millis(50));
-                        //TODO: What to do if this fails?
+                        tokio::time::delay_for(Duration::from_millis(50)).await;
+                        //TODO: Ignore the result of this, if it fails on all the retries
+                        // this will result in a general failure
                         self.update_metadata().await;
                     }
                     Ok(client) => {
                         //TODO: check different error codes and retry as necessary
                         let sub = Self::_request(client, &Request::Subscribe(req.clone())).await;
+                        match sub {
+                            Ok(resp) => {
+                                if let Response::Subscribe(resp) = resp {
+                                    let mut sub = Subscription {
+                                        stream: resp.into_inner(),
+                                    };
+                                    // if the subscription is a success - the server sends
+                                    // an empty message first
+                                    let msg = sub.next().await;
+                                    match msg {
+                                        Err(LiftbridgeError::GrpcError(status)) => {
+                                            if status.code() == tonic::Code::FailedPrecondition {
+                                                // ignore the result, this will result in general failure
+                                                delay_for(Duration::from_millis(10 + i * 50)).await;
+                                                self.update_metadata().await;
+                                                continue;
+                                            }
+
+                                            if status.code() == tonic::Code::NotFound {
+                                                Err(LiftbridgeError::NoSuchPartition)?
+                                            }
+                                        }
+                                        _ => (),
+                                    }
+                                    return Ok(sub);
+                                }
+                                //This should never happen,
+                                panic!("Subscribe request should return an appropriate response")
+                            }
+                            Err(LiftbridgeError::GrpcError(status))
+                                if status.code() == tonic::Code::Unavailable =>
+                            {
+                                delay_for(Duration::from_millis(50)).await;
+                                // ignore the result on purpose as we will fail eventually anyway
+                                self.update_metadata().await;
+                                continue;
+                            }
+                            _ => {
+                                sub?;
+                            }
+                        }
                     }
                 }
             }
