@@ -296,9 +296,10 @@ pub mod client {
             Ok(client)
         }
 
-        async fn change_broker(&mut self) -> Result<()> {
+        async fn change_broker(&self) -> Result<()> {
             let new_client = Client::connect_any(&self.metadata.get_addrs()).await?;
-            self.client = RwLock::new(new_client);
+            let mut lock = self.client.write().unwrap();
+            *lock = new_client;
             Ok(())
         }
 
@@ -525,7 +526,5 @@ pub mod client {
             pool.insert(addr.clone(), client);
             Ok(pool.get_mut(&addr).unwrap())
         }
-
-        // pub async fn publish(&mut self, stream: &str, message: Vec<u8>, M)
     }
 }
