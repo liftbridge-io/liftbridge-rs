@@ -298,8 +298,8 @@ pub mod client {
 
         async fn change_broker(&self) -> Result<()> {
             let new_client = Client::connect_any(&self.metadata.get_addrs()).await?;
-            let mut lock = self.client.write().unwrap();
-            *lock = new_client;
+            let mut client = self.client.write().unwrap();
+            *client = new_client;
             Ok(())
         }
 
@@ -325,9 +325,10 @@ pub mod client {
             Ok(channel.map(|chan| ApiClient::new(chan))?)
         }
 
-        async fn request(&mut self, msg: Request) -> Result<Response> {
+        async fn request(&self, msg: Request) -> Result<Response> {
+            let mut client = self.client.write().unwrap();
             for _ in 0..9 {
-                let res = Self::_request(self.client.get_mut().unwrap(), &msg).await;
+                let res = Self::_request(client.borrow_mut(), &msg).await;
                 match res {
                     Err(LiftbridgeError::GrpcError(status))
                         if status.code() == tonic::Code::Unavailable =>
