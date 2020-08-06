@@ -385,7 +385,7 @@ pub mod client {
         }
 
         //TODO: This is subject to change as it needs to receive StreamOptions
-        pub async fn create_stream(&mut self, subject: &str, name: &str) -> Result<()> {
+        pub async fn create_stream(&self, subject: &str, name: &str) -> Result<()> {
             let req = CreateStreamRequest {
                 subject: subject.to_string(),
                 name: name.to_string(),
@@ -395,7 +395,7 @@ pub mod client {
             Ok(())
         }
 
-        pub async fn delete_stream(&mut self, name: &str) -> Result<()> {
+        pub async fn delete_stream(&self, name: &str) -> Result<()> {
             let req = DeleteStreamRequest {
                 name: name.to_string(),
             };
@@ -403,7 +403,7 @@ pub mod client {
             Ok(())
         }
 
-        pub async fn pause_stream(&mut self, name: &str, options: PauseOptions) -> Result<()> {
+        pub async fn pause_stream(&self, name: &str, options: PauseOptions) -> Result<()> {
             let req = PauseStreamRequest {
                 name: name.to_string(),
                 partitions: options.partitions,
@@ -415,7 +415,7 @@ pub mod client {
         }
 
         pub async fn subscribe(
-            &'a mut self,
+            &mut self,
             stream: &str,
             options: SubscriptionOptions,
         ) -> Result<Subscription> {
@@ -489,7 +489,7 @@ pub mod client {
             Err(LiftbridgeError::UnableToSubscribe)?
         }
 
-        async fn update_metadata(&mut self) -> Result<()> {
+        async fn update_metadata(&self) -> Result<()> {
             let resp = self._fetch_metadata().await?;
             self.metadata.update(resp);
             Ok(())
@@ -497,7 +497,7 @@ pub mod client {
 
         pub async fn fetch_metadata(&mut self) {}
 
-        pub(crate) async fn _fetch_metadata(&mut self) -> Result<FetchMetadataResponse> {
+        pub(crate) async fn _fetch_metadata(&self) -> Result<FetchMetadataResponse> {
             let req = FetchMetadataRequest {
                 streams: Vec::new(),
             };
@@ -518,7 +518,7 @@ pub mod client {
             let addr = self
                 .metadata
                 .get_addr(stream, partition, read_isr_replica)?;
-            let pool = self.pool.get_mut().unwrap();
+            let mut pool = self.pool.get_mut().unwrap();
             if pool.contains_key(&addr) {
                 return Ok(pool.get_mut(&addr).unwrap());
             }
