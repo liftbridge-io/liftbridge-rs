@@ -114,7 +114,8 @@ pub mod client {
     use crate::api::{
         AckPolicy, CreateStreamRequest, CreateStreamResponse, DeleteStreamRequest,
         DeleteStreamResponse, FetchMetadataRequest, FetchMetadataResponse, Message,
-        PauseStreamRequest, PauseStreamResponse, StartPosition, SubscribeRequest,
+        PauseStreamRequest, PauseStreamResponse, PublishRequest, PublishResponse, StartPosition,
+        SubscribeRequest,
     };
     use crate::{LiftbridgeError, Result};
     use std::convert::TryFrom;
@@ -132,9 +133,7 @@ pub mod client {
     use tonic::transport::{Channel, Endpoint};
     use tonic::{IntoRequest, Streaming};
 
-    // as we are using http2 here instead of dealing in connection number
-    // this is a default concurrency limit per broker connection
-    const MAX_BROKER_CONCURRENCY: usize = 2;
+    const MAX_BROKER_CONNECTIONS: usize = 2;
     const KEEP_ALIVE_DURATION: Duration = Duration::from_secs(30);
     const RESUBSCRIBE_WAIT_TIME: Duration = Duration::from_secs(30);
     const ACK_WAIT_TIME: Duration = Duration::from_secs(5);
@@ -150,6 +149,7 @@ pub mod client {
         DeleteStream(DeleteStreamRequest),
         Subscribe(SubscribeRequest),
         FetchMetadata(FetchMetadataRequest),
+        // Publish(PublishRequest),
     }
 
     enum Response {
@@ -158,6 +158,7 @@ pub mod client {
         DeleteStream(tonic::Response<DeleteStreamResponse>),
         FetchMetadata(tonic::Response<FetchMetadataResponse>),
         Subscribe(tonic::Response<Streaming<Message>>),
+        Publish(tonic::Response<PublishResponse>),
     }
 
     //TODO: Make a builder for this
@@ -278,7 +279,7 @@ pub mod client {
 
         // Partitioner specifies the strategy for mapping a Message to a stream
         // partition.
-        partitioner: Box<dyn Partitioner>,
+        // partitioner: Box<dyn Partitioner>,
 
         // Partition specifies the stream partition to publish the Message to. If
         // this is set, any Partitioner will not be used. This is a pointer to
@@ -316,10 +317,7 @@ pub mod client {
 
         async fn connect(addr: &str) -> Result<ApiClient<Channel>> {
             let endpoint = Endpoint::try_from(format!("grpc://{}", addr))
-                .map(|e| {
-                    e.tcp_keepalive(Some(KEEP_ALIVE_DURATION))
-                        .concurrency_limit(MAX_BROKER_CONCURRENCY)
-                })
+                .map(|e| e.tcp_keepalive(Some(KEEP_ALIVE_DURATION)))
                 .unwrap();
             let channel = endpoint.connect().await;
             Ok(channel.map(|chan| ApiClient::new(chan))?)
@@ -328,7 +326,7 @@ pub mod client {
         async fn request(&self, msg: Request) -> Result<Response> {
             let mut client = self.client.write().unwrap();
             for _ in 0..9 {
-                let res = Self::_request(client.borrow_mut(), &msg).await;
+                let res = Self::_request(client.clone(), &msg).await;
                 match res {
                     Err(LiftbridgeError::GrpcError(status))
                         if status.code() == tonic::Code::Unavailable =>
@@ -343,7 +341,7 @@ pub mod client {
         }
 
         //TODO: We need to iterate the addresses if this fails to assign a new default broker
-        async fn _request(client: &mut ApiClient<Channel>, msg: &Request) -> Result<Response> {
+        async fn _request(mut client: ApiClient<Channel>, msg: &Request) -> Result<Response> {
             // TODO: it would be nice to do without the clone
             let res = match msg.clone() {
                 Request::CreateStream(req) => client
@@ -370,7 +368,6 @@ pub mod client {
                         _ => LiftbridgeError::from(err),
                     })
                     .map(Response::DeleteStream)?,
-                //TODO: Sort out map_err types
                 Request::Subscribe(req) => client
                     .subscribe(tonic::Request::new(req))
                     .await
@@ -495,7 +492,7 @@ pub mod client {
             Ok(())
         }
 
-        pub async fn fetch_metadata(&mut self) {}
+        pub async fn fetch_metadata(&self) {}
 
         pub(crate) async fn _fetch_metadata(&self) -> Result<FetchMetadataResponse> {
             let req = FetchMetadataRequest {
@@ -510,22 +507,25 @@ pub mod client {
         }
 
         async fn get_conn(
-            &mut self,
+            &self,
             stream: &str,
             partition: i32,
             read_isr_replica: bool,
-        ) -> Result<&mut ApiClient<Channel>> {
+        ) -> Result<ApiClient<Channel>> {
             let addr = self
                 .metadata
                 .get_addr(stream, partition, read_isr_replica)?;
-            let mut pool = self.pool.get_mut().unwrap();
-            if pool.contains_key(&addr) {
-                return Ok(pool.get_mut(&addr).unwrap());
-            }
 
+            let pool = self.pool.read().unwrap();
+            if pool.contains_key(&addr) {
+                return Ok(pool.get(&addr).unwrap().clone());
+            }
+            drop(pool);
+
+            let mut pool = self.pool.write().unwrap();
             let client = Self::connect(&addr).await?;
             pool.insert(addr.clone(), client);
-            Ok(pool.get_mut(&addr).unwrap())
+            Ok(pool.get(&addr).unwrap().clone())
         }
     }
 }
