@@ -150,7 +150,7 @@ pub mod client {
         DeleteStream(DeleteStreamRequest),
         Subscribe(SubscribeRequest),
         FetchMetadata(FetchMetadataRequest),
-        // Publish(PublishRequest),
+        Publish(PublishRequest),
     }
 
     enum Response {
@@ -349,6 +349,7 @@ pub mod client {
         ) -> Result<Response> {
             // TODO: it would be nice to do without the clone
             let res = match msg.clone() {
+                Request::Publish(req) => client.publish(req).await.map(Response::Publish)?,
                 Request::CreateStream(req) => client
                     .create_stream(tonic::Request::new(req))
                     .await
@@ -498,7 +499,25 @@ pub mod client {
             Ok(())
         }
 
-        pub async fn fetch_metadata(&self) {}
+        pub async fn fetch_metadata(&self) {
+            unimplemented!("fetch_metadata is currently not implemented")
+        }
+
+        //TODO: subject to change, need to support MessageOptions and proper Ack handling
+        pub async fn publish(&self, stream: &str, value: Vec<u8>) -> Result<()> {
+            let req = PublishRequest {
+                value,
+                stream: stream.to_string(),
+                ack_policy: AckPolicy::Leader as i32,
+                partition: 0,
+                headers: HashMap::new(),
+                ack_inbox: "".to_string(),
+                correlation_id: "".to_string(),
+                key: Vec::new(),
+            };
+            self.request(Request::Publish(req)).await?;
+            Ok(())
+        }
 
         pub(crate) async fn _fetch_metadata(&self) -> Result<FetchMetadataResponse> {
             let req = FetchMetadataRequest {
