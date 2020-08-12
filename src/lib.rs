@@ -133,6 +133,7 @@ pub mod client {
     use tonic::transport::{Channel, Endpoint};
     use tonic::{IntoRequest, Streaming};
 
+    // To be implemented via load-balancing two endpoints connected to the same broker
     const MAX_BROKER_CONNECTIONS: usize = 2;
     const KEEP_ALIVE_DURATION: Duration = Duration::from_secs(30);
     const RESUBSCRIBE_WAIT_TIME: Duration = Duration::from_secs(30);
@@ -324,13 +325,14 @@ pub mod client {
         }
 
         async fn request(&self, msg: Request) -> Result<Response> {
-            let mut client = self.client.write().unwrap();
             for _ in 0..9 {
-                let res = Self::_request(client.clone(), &msg).await;
+                let client = self.client.read().unwrap();
+                let res = self._request(client.clone(), &msg).await;
                 match res {
                     Err(LiftbridgeError::GrpcError(status))
                         if status.code() == tonic::Code::Unavailable =>
                     {
+                        drop(client);
                         self.change_broker().await?;
                         continue;
                     }
@@ -340,8 +342,11 @@ pub mod client {
             return Err(LiftbridgeError::BrokersUnavailable.into());
         }
 
-        //TODO: We need to iterate the addresses if this fails to assign a new default broker
-        async fn _request(mut client: ApiClient<Channel>, msg: &Request) -> Result<Response> {
+        async fn _request(
+            &self,
+            mut client: ApiClient<Channel>,
+            msg: &Request,
+        ) -> Result<Response> {
             // TODO: it would be nice to do without the clone
             let res = match msg.clone() {
                 Request::CreateStream(req) => client
@@ -437,8 +442,9 @@ pub mod client {
                         self.update_metadata().await;
                     }
                     Ok(client) => {
-                        //TODO: check different error codes and retry as necessary
-                        let sub = Self::_request(client, &Request::Subscribe(req.clone())).await;
+                        let sub = self
+                            ._request(client, &Request::Subscribe(req.clone()))
+                            .await;
                         match sub {
                             Ok(resp) => {
                                 if let Response::Subscribe(resp) = resp {
