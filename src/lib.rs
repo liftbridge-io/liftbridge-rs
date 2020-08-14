@@ -5,7 +5,7 @@ mod api {
     include!(concat!(env!("OUT_DIR"), "/proto.rs"));
 }
 pub mod metadata {
-    use crate::api::{Broker, FetchMetadataResponse, StreamMetadata};
+    use crate::api::{FetchMetadataResponse, StreamMetadata};
     use crate::{LiftbridgeError, Result};
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
@@ -75,7 +75,7 @@ pub mod metadata {
 
         pub fn get_addrs(&self) -> Vec<String> {
             let mut addrs = self.bootstrap_addrs.clone();
-            let mut cached_addrs = &mut self.metadata.read().unwrap().get_addrs();
+            let cached_addrs = &mut self.metadata.read().unwrap().get_addrs();
 
             addrs.append(cached_addrs);
             addrs
@@ -130,11 +130,11 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
-    use std::borrow::BorrowMut;
+    
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
-    use tonic::{IntoRequest, Streaming};
+    use tonic::{Streaming};
 
     // To be implemented via load-balancing two endpoints connected to the same broker
     const MAX_BROKER_CONNECTIONS: usize = 2;
