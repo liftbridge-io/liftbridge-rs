@@ -13,7 +13,7 @@ pub mod metadata {
 
     struct Metadata {
         last_updated: DateTime<Utc>,
-        brokers: HashMap<String, Broker>,
+        brokers: HashMap<String, String>,
         streams: HashMap<String, StreamMetadata>,
     }
 
@@ -21,7 +21,8 @@ pub mod metadata {
         fn default() -> Self {
             Metadata {
                 last_updated: Utc::now(),
-                ..Default::default()
+                brokers: HashMap::new(),
+                streams: HashMap::new(),
             }
         }
     }
@@ -33,7 +34,7 @@ pub mod metadata {
 
         fn get_addrs(&self) -> Vec<String> {
             self.brokers
-                .keys()
+                .values()
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect()
@@ -54,12 +55,12 @@ pub mod metadata {
         }
 
         pub fn update(&self, resp: FetchMetadataResponse) {
-            let mut brokers: HashMap<String, Broker> = HashMap::new();
+            let mut brokers: HashMap<String, String> = HashMap::new();
             let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
 
             for b in resp.brokers {
                 let addr = format!("gprc://{}:{}", b.host, b.port);
-                brokers.insert(addr, b);
+                brokers.insert(b.id, addr);
             }
 
             for s in resp.metadata {
@@ -99,14 +100,15 @@ pub mod metadata {
             if read_isr_replica {
                 let replicas = &partition.isr;
                 //TODO: add rand
-                return Ok(replicas.get(0).unwrap().clone());
+                let replica = replicas.get(0).unwrap();
+                return Ok(metadata.brokers.get(replica).unwrap().clone());
             }
 
             if partition.leader.is_empty() {
                 Err(LiftbridgeError::NoLeader)?
             }
 
-            Ok(partition.leader.clone())
+            Ok(metadata.brokers.get(&partition.leader).unwrap().clone())
         }
     }
 }
@@ -213,18 +215,17 @@ pub mod client {
 
     impl Default for SubscriptionOptions {
         fn default() -> Self {
-            Self::new()
+            Self {
+                start_position: StartPosition::NewOnly,
+                start_offset: 0,
+                start_timestamp: 0,
+                read_isr_replica: false,
+                partition: 0,
+            }
         }
     }
 
     impl SubscriptionOptions {
-        pub fn new() -> Self {
-            SubscriptionOptions {
-                start_position: StartPosition::NewOnly,
-                ..Default::default()
-            }
-        }
-
         pub fn start_at_offset(mut self, offset: i64) -> Self {
             self.start_position = StartPosition::Offset;
             self.start_offset = offset;
