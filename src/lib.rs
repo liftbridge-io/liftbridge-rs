@@ -31,22 +31,22 @@ pub mod metadata {
             self.last_updated
         }
 
-        fn get_addrs(&self) -> Vec<&str> {
+        fn get_addrs(&self) -> Vec<String> {
             self.brokers
                 .keys()
                 .into_iter()
-                .map(|k| k.as_str())
+                .map(|s| s.to_string())
                 .collect()
         }
     }
 
-    pub struct MetadataCache<'a> {
+    pub struct MetadataCache {
         metadata: RwLock<Metadata>,
-        bootstrap_addrs: Vec<&'a str>,
+        bootstrap_addrs: Vec<String>,
     }
 
-    impl<'a> MetadataCache<'a> {
-        pub fn new(addrs: Vec<&'a str>) -> Self {
+    impl MetadataCache {
+        pub fn new(addrs: Vec<String>) -> Self {
             MetadataCache {
                 metadata: RwLock::new(Metadata::default()),
                 bootstrap_addrs: addrs,
@@ -72,9 +72,11 @@ pub mod metadata {
             metadata.last_updated = Utc::now();
         }
 
-        pub fn get_addrs(&self) -> Vec<&'a str> {
+        pub fn get_addrs(&self) -> Vec<String> {
             let mut addrs = self.bootstrap_addrs.clone();
-            addrs.extend(&self.get_addrs());
+            let mut cached_addrs = &mut self.metadata.read().unwrap().get_addrs();
+
+            addrs.append(cached_addrs);
             addrs
         }
 
@@ -185,10 +187,10 @@ pub mod client {
         pub resume_all: bool,
     }
 
-    pub struct Client<'a> {
+    pub struct Client {
         pool: RwLock<HashMap<String, ApiClient<Channel>>>,
         client: RwLock<ApiClient<Channel>>,
-        metadata: MetadataCache<'a>,
+        metadata: MetadataCache,
     }
 
     pub struct SubscriptionOptions {
@@ -288,8 +290,8 @@ pub mod client {
         partition: Option<i32>,
     }
 
-    impl<'a> Client<'a> {
-        pub async fn new(addrs: Vec<&'a str>) -> Result<Client<'a>> {
+    impl Client {
+        pub async fn new(addrs: Vec<String>) -> Result<Client> {
             let client = Client {
                 pool: RwLock::new(HashMap::new()),
                 client: RwLock::new(Client::connect_any(&addrs).await?),
@@ -305,7 +307,7 @@ pub mod client {
             Ok(())
         }
 
-        async fn connect_any(addrs: &Vec<&str>) -> Result<ApiClient<Channel>> {
+        async fn connect_any(addrs: &Vec<String>) -> Result<ApiClient<Channel>> {
             for addr in addrs.iter() {
                 let client = Self::connect(addr).await;
                 match client {
