@@ -130,7 +130,6 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
-    use actix_rt::time::delay_for;
     use std::borrow::BorrowMut;
     use std::collections::HashMap;
     use std::sync::RwLock;
@@ -462,7 +461,10 @@ pub mod client {
                                         Err(LiftbridgeError::GrpcError(status)) => {
                                             if status.code() == tonic::Code::FailedPrecondition {
                                                 // ignore the result, this will result in general failure
-                                                delay_for(Duration::from_millis(10 + i * 50)).await;
+                                                tokio::time::delay_for(Duration::from_millis(
+                                                    10 + i * 50,
+                                                ))
+                                                .await;
                                                 self.update_metadata().await;
                                                 continue;
                                             }
@@ -481,7 +483,7 @@ pub mod client {
                             Err(LiftbridgeError::GrpcError(status))
                                 if status.code() == tonic::Code::Unavailable =>
                             {
-                                delay_for(Duration::from_millis(50)).await;
+                                tokio::time::delay_for(Duration::from_millis(50)).await;
                                 // ignore the result on purpose as we will fail eventually anyway
                                 self.update_metadata().await;
                                 continue;
