@@ -59,7 +59,7 @@ pub mod metadata {
             let mut streams: HashMap<String, StreamMetadata> = HashMap::new();
 
             for b in resp.brokers {
-                let addr = format!("gprc://{}:{}", b.host, b.port);
+                let addr = format!("{}:{}", b.host, b.port);
                 brokers.insert(b.id, addr);
             }
 
