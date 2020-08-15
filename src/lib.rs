@@ -137,7 +137,7 @@ pub mod client {
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
-    use tonic::Streaming;
+    use tonic::{Code, Streaming};
 
     // To be implemented via load-balancing two endpoints connected to the same broker
     const MAX_BROKER_CONNECTIONS: usize = 2;
@@ -212,7 +212,15 @@ pub mod client {
     impl Subscription {
         //TODO: Implement resubscribe on failure
         pub async fn next(&mut self) -> Result<Option<Message>> {
-            Ok(self.stream.message().await?)
+            match self.stream.message() {
+                Err(e) => Err(match e.code() {
+                    Code::NotFound => LiftbridgeError::StreamDeleted,
+                    Code::FailedPrecondition => LiftbridgeError::PartitionPaused,
+                    //Code::Unavailable => // resubscribe to a new leader
+                    _ => LiftbridgeError::GrpcError(e),
+                }),
+                Ok(msg) => Ok(msg),
+            }
         }
     }
 
