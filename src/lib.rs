@@ -130,11 +130,10 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
-    
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
-    use tonic::{Streaming};
+    use tonic::Streaming;
 
     // To be implemented via load-balancing two endpoints connected to the same broker
     const MAX_BROKER_CONNECTIONS: usize = 2;
@@ -291,7 +290,8 @@ pub mod client {
     }
 
     impl Client {
-        pub async fn new(addrs: Vec<String>) -> Result<Client> {
+        pub async fn new(addrs: Vec<&str>) -> Result<Client> {
+            let addrs = addrs.into_iter().map(String::from).collect();
             let client = Client {
                 pool: RwLock::new(HashMap::new()),
                 client: RwLock::new(Client::connect_any(&addrs).await?),
