@@ -6,8 +6,8 @@ edition = "2018"
 description = "Liftbridge client for rust"
 readme = "README.md"
 license = "Apache-2.0"
-keywords = ["client", "pubsub", "liftbridge"]
-categories = ["client", "pubsub"]
+keywords = ["client", "pubsub", "liftbridge", "queue", "stream"]
+categories = ["client", "pubsub", "queue", "stream"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
