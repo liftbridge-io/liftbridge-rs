@@ -1,4 +1,6 @@
 # liftbridge-rs
+![crates.io](https://img.shields.io/crates/v/liftbridge.svg)
+
 Liftbridge client for Rust language. 
 
 ## Protobuf definitions
