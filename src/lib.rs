@@ -313,7 +313,7 @@ pub mod client {
         }
 
         async fn connect_any(addrs: &mut Vec<String>) -> Result<ApiClient<Channel>> {
-            let addrs = addrs.shuffle(&mut thread_rng());
+            addrs.shuffle(&mut thread_rng());
             for addr in addrs.iter() {
                 let client = Self::connect(addr).await;
                 match client {
