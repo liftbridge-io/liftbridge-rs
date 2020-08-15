@@ -17,6 +17,7 @@ thiserror = "1.0.20"
 anyhow = "1.0.31"
 chrono = "0.4.13"
 tokio = { version = "0.2", features = ["time"] }
+rand = "0.7.3"
 
 
 [build-dependencies]

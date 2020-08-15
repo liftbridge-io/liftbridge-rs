@@ -8,6 +8,7 @@ pub mod metadata {
     use crate::api::{FetchMetadataResponse, StreamMetadata};
     use crate::{LiftbridgeError, Result};
     use chrono::{DateTime, Utc};
+    use rand::Rng;
     use std::collections::HashMap;
     use std::sync::{RwLock, RwLockReadGuard};
 
@@ -99,8 +100,9 @@ pub mod metadata {
 
             if read_isr_replica {
                 let replicas = &partition.isr;
-                //TODO: add rand
-                let replica = replicas.get(0).unwrap();
+                let replica = rand::thread_rng().gen_range(0, replicas.len());
+
+                let replica = replicas.get(replica).unwrap();
                 return Ok(metadata.brokers.get(replica).unwrap().clone());
             }
 
@@ -130,6 +132,8 @@ pub mod client {
 
     use crate::metadata::MetadataCache;
 
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
@@ -206,6 +210,7 @@ pub mod client {
     }
 
     impl Subscription {
+        //TODO: Implement resubscribe on failure
         pub async fn next(&mut self) -> Result<Option<Message>> {
             Ok(self.stream.message().await?)
         }
@@ -291,23 +296,24 @@ pub mod client {
 
     impl Client {
         pub async fn new(addrs: Vec<&str>) -> Result<Client> {
-            let addrs = addrs.into_iter().map(String::from).collect();
+            let mut addrs = addrs.into_iter().map(String::from).collect();
             let client = Client {
                 pool: RwLock::new(HashMap::new()),
-                client: RwLock::new(Client::connect_any(&addrs).await?),
+                client: RwLock::new(Client::connect_any(&mut addrs).await?),
                 metadata: MetadataCache::new(addrs),
             };
             Ok(client)
         }
 
         async fn change_broker(&self) -> Result<()> {
-            let new_client = Client::connect_any(&self.metadata.get_addrs()).await?;
+            let new_client = Client::connect_any(&mut self.metadata.get_addrs()).await?;
             let mut client = self.client.write().unwrap();
             *client = new_client;
             Ok(())
         }
 
-        async fn connect_any(addrs: &Vec<String>) -> Result<ApiClient<Channel>> {
+        async fn connect_any(addrs: &mut Vec<String>) -> Result<ApiClient<Channel>> {
+            let addrs = addrs.shuffle(&mut thread_rng());
             for addr in addrs.iter() {
                 let client = Self::connect(addr).await;
                 match client {
