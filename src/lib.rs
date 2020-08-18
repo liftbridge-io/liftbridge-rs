@@ -137,7 +137,7 @@ pub mod client {
     use std::collections::HashMap;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
-    use tonic::{Code, Streaming};
+    use tonic::{Code, Status, Streaming};
 
     // To be implemented via load-balancing two endpoints connected to the same broker
     const MAX_BROKER_CONNECTIONS: usize = 2;
@@ -197,6 +197,7 @@ pub mod client {
         metadata: MetadataCache,
     }
 
+    #[derive(Clone)]
     pub struct SubscriptionOptions {
         start_position: StartPosition,
         start_offset: i64,
@@ -205,22 +206,62 @@ pub mod client {
         read_isr_replica: bool,
     }
 
-    pub struct Subscription {
+    pub struct Subscription<'a> {
+        last_offset: i64,
+        stream_name: &'a str,
         stream: Streaming<Message>,
+        client: &'a Client,
+        options: SubscriptionOptions,
     }
 
-    impl Subscription {
-        //TODO: Implement resubscribe on failure
+    impl<'a> Subscription<'a> {
+        pub(crate) async fn _next(&mut self) -> Result<Option<Message>, Status> {
+            self.stream.message().await
+        }
+
         pub async fn next(&mut self) -> Result<Option<Message>> {
-            match self.stream.message() {
-                Err(e) => Err(match e.code() {
-                    Code::NotFound => LiftbridgeError::StreamDeleted,
-                    Code::FailedPrecondition => LiftbridgeError::PartitionPaused,
-                    //Code::Unavailable => // resubscribe to a new leader
-                    _ => LiftbridgeError::GrpcError(e),
-                }),
-                Ok(msg) => Ok(msg),
+            for _ in 0..4 {
+                let msg: Result<Option<Message>, Status> = self._next().await;
+
+                if let Ok(message) = msg {
+                    return match message {
+                        Some(msg) => {
+                            self.last_offset = msg.offset;
+                            Ok(Some(msg))
+                        }
+                        _ => Ok(message),
+                    };
+                }
+
+                if let Err(err) = msg {
+                    if err.code() == Code::Unavailable {
+                        if self.last_offset == -1 {
+                            let sub = self
+                                .client
+                                .subscribe(self.stream_name, self.options.clone())
+                                .await?;
+                            self.stream = sub.stream;
+                        } else {
+                            let mut options = self.options.clone();
+                            options.start_offset = self.last_offset + 1;
+                            options.start_position = StartPosition::Offset;
+                            let sub = self
+                                .client
+                                .subscribe(self.stream_name, self.options.clone())
+                                .await?;
+                            self.stream = sub.stream;
+                        }
+                        continue;
+                    }
+                    return Err(match err.code() {
+                        Code::NotFound => LiftbridgeError::StreamDeleted,
+                        Code::FailedPrecondition => LiftbridgeError::PartitionPaused,
+                        _ => LiftbridgeError::GrpcError(err),
+                    });
+                }
             }
+
+            return Err(LiftbridgeError::UnableToSubscribe);
         }
     }
 
@@ -433,11 +474,11 @@ pub mod client {
             Ok(())
         }
 
-        pub async fn subscribe(
-            &mut self,
-            stream: &str,
+        pub async fn subscribe<'a>(
+            &'a self,
+            stream: &'a str,
             options: SubscriptionOptions,
-        ) -> Result<Subscription> {
+        ) -> Result<Subscription<'a>> {
             let req = SubscribeRequest {
                 partition: options.partition,
                 start_timestamp: options.start_timestamp,
@@ -467,12 +508,16 @@ pub mod client {
                                 if let Response::Subscribe(resp) = resp {
                                     let mut sub = Subscription {
                                         stream: resp.into_inner(),
+                                        stream_name: stream.clone(),
+                                        client: self,
+                                        last_offset: -1,
+                                        options: options.clone(),
                                     };
                                     // if the subscription is a success - the server sends
                                     // an empty message first
-                                    let msg = sub.next().await;
+                                    let msg = sub._next().await;
                                     match msg {
-                                        Err(LiftbridgeError::GrpcError(status)) => {
+                                        Err(status) => {
                                             if status.code() == tonic::Code::FailedPrecondition {
                                                 // ignore the result, this will result in general failure
                                                 tokio::time::delay_for(Duration::from_millis(
