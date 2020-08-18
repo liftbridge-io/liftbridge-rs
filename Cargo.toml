@@ -1,0 +1,24 @@
+[package]
+name = "liftbridge"
+version = "0.1.1"
+authors = ["Roman Useinov <roman.useinov@gmail.com>"]
+edition = "2018"
+description = "Liftbridge client for rust"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["client", "pubsub", "liftbridge", "queue", "stream"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tonic = "0.3.0"
+prost = "0.6.1"
+thiserror = "1.0.20"
+anyhow = "1.0.31"
+chrono = "0.4.13"
+tokio = { version = "0.2", features = ["time"] }
+rand = "0.7.3"
+
+
+[build-dependencies]
+tonic-build = "0.3.0"
