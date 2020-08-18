@@ -128,13 +128,14 @@ pub mod client {
 
     use std::time::Duration;
 
-    use chrono::Utc;
+    use chrono::{DateTime, Datelike, Utc};
 
     use crate::metadata::MetadataCache;
 
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
+    use rand::{thread_rng, Rng};
     use std::collections::HashMap;
+    use std::ops::Add;
     use std::sync::RwLock;
     use tonic::transport::{Channel, Endpoint};
     use tonic::{Code, Status, Streaming};
@@ -144,6 +145,7 @@ pub mod client {
     const KEEP_ALIVE_DURATION: Duration = Duration::from_secs(30);
     const RESUBSCRIBE_WAIT_TIME: Duration = Duration::from_secs(30);
     const ACK_WAIT_TIME: Duration = Duration::from_secs(5);
+    const NO_OFFSET: i64 = -1;
 
     pub struct Config {
         timeout: Option<Duration>,
@@ -222,7 +224,12 @@ pub mod client {
         }
 
         pub async fn next(&mut self) -> Result<Option<Message>> {
-            for _ in 0..4 {
+            let deadline: DateTime<Utc> =
+                Utc::now() + chrono::Duration::from_std(RESUBSCRIBE_WAIT_TIME).unwrap();
+            loop {
+                if deadline.lt(&Utc::now()) {
+                    break;
+                }
                 let msg: Result<Option<Message>, Status> = self._next().await;
 
                 if let Ok(message) = msg {
@@ -236,23 +243,33 @@ pub mod client {
                 }
 
                 if let Err(err) = msg {
-                    //TODO: introduce exponential backoff
                     if err.code() == Code::Unavailable {
-                        if self.last_offset == -1 {
-                            let sub = self
-                                .client
-                                .subscribe(self.stream_name, self.options.clone())
-                                .await?;
-                            self.stream = sub.stream;
-                        } else {
-                            let mut options = self.options.clone();
+                        let mut options = self.options.clone();
+
+                        if self.last_offset != NO_OFFSET {
                             options.start_offset = self.last_offset + 1;
                             options.start_position = StartPosition::Offset;
-                            let sub = self
-                                .client
-                                .subscribe(self.stream_name, self.options.clone())
-                                .await?;
-                            self.stream = sub.stream;
+                        }
+
+                        let sub = self
+                            .client
+                            .subscribe(self.stream_name, self.options.clone())
+                            .await;
+                        match sub {
+                            Err(e) => {
+                                if let LiftbridgeError::UnableToSubscribe = e {
+                                    tokio::time::delay_for(
+                                        Duration::from_secs(1)
+                                            + Duration::from_millis(
+                                                rand::thread_rng().gen_range(1, 500),
+                                            ),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                Err(e)?
+                            }
+                            Ok(sub) => self.stream = sub.stream,
                         }
                         continue;
                     }
@@ -513,7 +530,7 @@ pub mod client {
                                         stream: resp.into_inner(),
                                         stream_name: stream,
                                         client: self,
-                                        last_offset: -1,
+                                        last_offset: NO_OFFSET,
                                         options: options.clone(),
                                     };
                                     // if the subscription is a success - the server sends
