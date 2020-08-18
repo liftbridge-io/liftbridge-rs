@@ -508,7 +508,7 @@ pub mod client {
                                 if let Response::Subscribe(resp) = resp {
                                     let mut sub = Subscription {
                                         stream: resp.into_inner(),
-                                        stream_name: stream.clone(),
+                                        stream_name: stream,
                                         client: self,
                                         last_offset: -1,
                                         options: options.clone(),
