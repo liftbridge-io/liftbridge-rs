@@ -192,6 +192,8 @@ pub mod client {
     }
 
     pub struct Client {
+        //TODO: cleanup the pool on metadata update or pool access
+        // to avoid leaking memory
         pool: RwLock<HashMap<String, ApiClient<Channel>>>,
         client: RwLock<ApiClient<Channel>>,
         metadata: MetadataCache,
@@ -234,6 +236,7 @@ pub mod client {
                 }
 
                 if let Err(err) = msg {
+                    //TODO: introduce exponential backoff
                     if err.code() == Code::Unavailable {
                         if self.last_offset == -1 {
                             let sub = self
