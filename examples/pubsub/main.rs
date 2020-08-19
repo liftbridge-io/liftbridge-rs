@@ -1,10 +1,9 @@
-use liftbridge_rs::client::{Client, SubscriptionOptions};
-use std::collections::HashMap;
-use std::sync::RwLock;
+use liftbridge::client::{Client, SubscriptionOptions};
+use liftbridge::LiftbridgeError;
 
 #[actix_rt::main]
 async fn main() -> () {
-    let mut client = Client::new(vec!["localhost:9292"])
+    let client = Client::new(vec!["registry:9292"])
         .await
         .expect("Unable to connect");
     match client.create_stream("sub", "name").await {
