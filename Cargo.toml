@@ -22,3 +22,10 @@ rand = "0.7.3"
 
 [build-dependencies]
 tonic-build = "0.3.0"
+
+[dev-dependencies]
+actix-rt = "1.1.1"
+
+[[example]]
+name = "pubsub"
+path = "examples/pubsub/main.rs"
