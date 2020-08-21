@@ -128,15 +128,15 @@ pub mod client {
 
     use std::time::Duration;
 
-    use chrono::{DateTime, Datelike, Utc};
+    use chrono::{DateTime, Utc};
 
     use crate::metadata::MetadataCache;
 
+    use lru::LruCache;
     use rand::seq::SliceRandom;
     use rand::{thread_rng, Rng};
     use std::collections::HashMap;
-    use std::ops::Add;
-    use std::sync::RwLock;
+    use std::sync::{Mutex, RwLock};
     use tonic::transport::{Channel, Endpoint};
     use tonic::{Code, Status, Streaming};
 
@@ -146,6 +146,7 @@ pub mod client {
     const RESUBSCRIBE_WAIT_TIME: Duration = Duration::from_secs(30);
     const ACK_WAIT_TIME: Duration = Duration::from_secs(5);
     const NO_OFFSET: i64 = -1;
+    const DEFAULT_POOL_SIZE: usize = 100;
 
     pub struct Config {
         timeout: Option<Duration>,
@@ -196,7 +197,7 @@ pub mod client {
     pub struct Client {
         //TODO: cleanup the pool on metadata update or pool access
         // to avoid leaking memory
-        pool: RwLock<HashMap<String, ApiClient<Channel>>>,
+        pool: Mutex<LruCache<String, ApiClient<Channel>>>,
         client: RwLock<ApiClient<Channel>>,
         metadata: MetadataCache,
     }
@@ -367,7 +368,7 @@ pub mod client {
         pub async fn new(addrs: Vec<&str>) -> Result<Client> {
             let mut addrs = addrs.into_iter().map(String::from).collect();
             let client = Client {
-                pool: RwLock::new(HashMap::new()),
+                pool: Mutex::new(LruCache::new(DEFAULT_POOL_SIZE)),
                 client: RwLock::new(Client::connect_any(&mut addrs).await?),
                 metadata: MetadataCache::new(addrs),
             };
@@ -625,15 +626,13 @@ pub mod client {
                 .metadata
                 .get_addr(stream, partition, read_isr_replica)?;
 
-            let pool = self.pool.read().unwrap();
-            if pool.contains_key(&addr) {
+            let mut pool = self.pool.lock().unwrap();
+            if pool.contains(&addr) {
                 return Ok(pool.get(&addr).unwrap().clone());
             }
-            drop(pool);
 
-            let mut pool = self.pool.write().unwrap();
             let client = Self::connect(&addr).await?;
-            pool.insert(addr.clone(), client);
+            pool.put(addr.clone(), client);
             Ok(pool.get(&addr).unwrap().clone())
         }
     }
