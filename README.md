@@ -23,6 +23,10 @@ Note that the underlying `ApiClient` is being cloned - this has been done on pur
 because the underlying connection is being reused for all the cloned versions of the client.  
 The related tonic issue that explains the reasoning behind this can be found [here](https://github.com/hyperium/tonic/issues/33). 
 
+## Contributions
+Contributions are most welcome either via issues/PRs. It's best to open an issue and discuss it first before committing to implementation
+of any features.
+
 ## Credits
 The initial work on this client was generously sponsored by [Tribe Health Solutions Inc.](http://tribehealthsolutions.com).
 
