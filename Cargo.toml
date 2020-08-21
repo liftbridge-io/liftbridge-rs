@@ -1,6 +1,6 @@
 [package]
 name = "liftbridge"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Roman Useinov <roman.useinov@gmail.com>"]
 edition = "2018"
 description = "Liftbridge client for rust"
@@ -18,7 +18,7 @@ anyhow = "1.0.31"
 chrono = "0.4.13"
 tokio = { version = "0.2", features = ["time"] }
 rand = "0.7.3"
-
+lru = "0.6.0"
 
 [build-dependencies]
 tonic-build = "0.3.0"
