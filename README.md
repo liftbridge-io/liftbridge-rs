@@ -1,5 +1,5 @@
 # liftbridge-rs
-![crates.io](https://img.shields.io/crates/v/liftbridge.svg)
+[![crates.io Badge]][crates.io package]
 
 Liftbridge client for Rust language. 
 
@@ -25,3 +25,6 @@ The related tonic issue that explains the reasoning behind this can be found [he
 
 ## Credits
 The initial work on this client was generously sponsored by [Tribe Health Solutions Inc.](http://tribehealthsolutions.com).
+
+[crates.io badge]: https://img.shields.io/crates/v/liftbridge.svg
+[crates.io package]: https://crates.io/crates/liftbridge/
